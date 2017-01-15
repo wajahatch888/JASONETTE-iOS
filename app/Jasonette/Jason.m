@@ -78,7 +78,7 @@
         NSString *webrootPath = [resourcePath stringByAppendingPathComponent:@""];  
         NSString *loc = @"file:/";
 
-        NSString *jsonFile = [[url lowercaseString] stringByReplacingOccurrencesOfString:loc withString:webrootPath];
+        NSString *jsonFile = [url stringByReplacingOccurrencesOfString:loc withString:webrootPath];
         NSLog(@"LOCALFILES jsonFile is %@", jsonFile);
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -113,8 +113,7 @@
      *
      **************************************************/
     JasonAppDelegate *app = (JasonAppDelegate *)[[UIApplication sharedApplication] delegate];
-    NSURL *file = [[NSBundle mainBundle] URLForResource:@"settings" withExtension:@"plist"];
-    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfURL:file];
+    NSDictionary *plist = [self getSettings];
     ROOT_URL = plist[@"url"];
     INITIAL_LOADING = plist[@"loading"];
     
@@ -837,8 +836,7 @@
     *
     ********************************************************************************************************/
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
-    NSURL *file = [[NSBundle mainBundle] URLForResource:@"settings" withExtension:@"plist"];
-    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfURL:file];
+    NSDictionary *plist = [self getSettings];
     for(NSString *key in plist){
         if(![key isEqualToString:@"url"]){
             NSString *new_key = [NSString stringWithFormat:@"$keys.%@", key];
@@ -851,6 +849,16 @@
         [newKeys addObject:@{@"key": key, @"val": dict[key]}];
     }
     return [newKeys copy];
+}
+-(NSDictionary*)getSettings{
+    NSDictionary * infoPlistSettings = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"settings"];
+    if(infoPlistSettings != nil){//target's info.plist file contains customized settings
+        return infoPlistSettings;
+    }else{//settings not found in target's Info.plist - get from file 
+        NSURL *file = [[NSBundle mainBundle] URLForResource:@"settings" withExtension:@"plist"];
+        NSDictionary *settingsPlistSettings = [NSDictionary dictionaryWithContentsOfURL:file];
+        return settingsPlistSettings;
+    }
 }
 - (NSDictionary *)getEnv{
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
@@ -1351,10 +1359,17 @@
                 navigationController.hidesBarsOnSwipe = NO;
             }
             
-            if(headStyle[@"hide"]){
-                [navigationController setNavigationBarHidden:YES];
+            
+            if(headStyle[@"hide"] && [headStyle[@"hide"] boolValue]){
+                dispatch_async(dispatch_get_main_queue(), ^{
+                     [navigationController setNavigationBarHidden:YES];
+                });
+               
             } else {
-                [navigationController setNavigationBarHidden:NO];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [navigationController setNavigationBarHidden:NO];
+                });
+                
             }
             
             NSString *font_name = @"HelveticaNeue-CondensedBold";
@@ -2436,23 +2451,42 @@
                 // Module actions: "$CLASS.METHOD" format => Calls other classes
                 else
                 {
-                    /*
-                     
-                     CLASS name Needs to follow the following convention:
-                     
-                     "Jason[CLASSNAME]Action"
-                     
-                     example: JasonMediaAction, JasonAudioAction, JasonNetworkAction, etc.
-                     
-                     */
                     
                     NSString *className = tokens[0];
-                    if(className.length > 1 && [className hasPrefix:@"$"]){
+                    
+                    // first take a look at the json file to resolve classname
+                    NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
+                    NSString *jrjson_filename=[NSString stringWithFormat:@"%@/%@.json", resourcePath, className];
+                    NSFileManager *fileManager = [NSFileManager defaultManager];
+                    NSString *resolved_classname = nil;
+                    if ([fileManager fileExistsAtPath:jrjson_filename]) {
+                        NSError *error;
+                        NSInputStream *inputStream = [[NSInputStream alloc] initWithFileAtPath:jrjson_filename];
+                        [inputStream open];
+                        NSDictionary *json = [NSJSONSerialization JSONObjectWithStream: inputStream options:kNilOptions error:&error];
+                        [inputStream close];
+                        if(json[@"classname"]){
+                            resolved_classname = json[@"classname"];
+                        }
+                    } else {
+                        if(className.length > 1 && [className hasPrefix:@"$"]){
+                            resolved_classname = [[className substringFromIndex:1] capitalizedString];
+                            /*
+                             
+                             CLASS name Needs to follow the following convention:
+                             
+                             "Jason[CLASSNAME]Action"
+                             
+                             example: JasonMediaAction, JasonAudioAction, JasonNetworkAction, etc.
+                             
+                             */
 
-                        className = [[className substringFromIndex:1] capitalizedString];
-                        className = [NSString stringWithFormat:@"Jason%@Action", className];
-                        
-                        Class ActionClass = NSClassFromString(className);
+                            resolved_classname = [NSString stringWithFormat:@"Jason%@Action", resolved_classname];
+                        }
+                    }
+                    
+                    if(resolved_classname){
+                        Class ActionClass = NSClassFromString(resolved_classname);
                         if(ActionClass){
                             // This means I have implemented this already
                             NSString *methodName = tokens[1];
@@ -2466,7 +2500,7 @@
                             [[Jason client] call:@{@"type": @"$util.banner",
                                                    @"options": @{
                                                        @"title": @"Error",
-                                                       @"description": [NSString stringWithFormat:@"%@ class doesn't exist.", className]
+                                                       @"description": [NSString stringWithFormat:@"%@ class doesn't exist.", resolved_classname]
                                                    }}];
                         }
                     }
